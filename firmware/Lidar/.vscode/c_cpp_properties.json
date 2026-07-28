@@ -10,7 +10,7 @@
             "includePath": [
                 "C:/PlatformIO/Projects/R8Robocup/firmware/Lidar/include",
                 "C:/PlatformIO/Projects/R8Robocup/firmware/Lidar/src",
-                "C:/Users/tamag/.platformio/packages/framework-arduinoespressif32/libraries/WiFi/src",
+                "C:/Users/tamag/.platformio/packages/framework-arduinoespressif32/libraries/Wire/src",
                 "C:/PlatformIO/Projects/R8Robocup/firmware/Lidar/.pio/libdeps/freenove_esp32_wrover/HX711/src",
                 "C:/Users/tamag/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/newlib/platform_include",
                 "C:/Users/tamag/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/freertos/include",
@@ -237,9 +237,9 @@
                 "C:/Users/tamag/.platformio/packages/framework-arduinoespressif32/libraries/USB/src",
                 "C:/Users/tamag/.platformio/packages/framework-arduinoespressif32/libraries/Update/src",
                 "C:/Users/tamag/.platformio/packages/framework-arduinoespressif32/libraries/WebServer/src",
+                "C:/Users/tamag/.platformio/packages/framework-arduinoespressif32/libraries/WiFi/src",
                 "C:/Users/tamag/.platformio/packages/framework-arduinoespressif32/libraries/WiFiClientSecure/src",
                 "C:/Users/tamag/.platformio/packages/framework-arduinoespressif32/libraries/WiFiProv/src",
-                "C:/Users/tamag/.platformio/packages/framework-arduinoespressif32/libraries/Wire/src",
                 ""
             ],
             "browse": {
@@ -247,7 +247,7 @@
                 "path": [
                     "C:/PlatformIO/Projects/R8Robocup/firmware/Lidar/include",
                     "C:/PlatformIO/Projects/R8Robocup/firmware/Lidar/src",
-                    "C:/Users/tamag/.platformio/packages/framework-arduinoespressif32/libraries/WiFi/src",
+                    "C:/Users/tamag/.platformio/packages/framework-arduinoespressif32/libraries/Wire/src",
                     "C:/PlatformIO/Projects/R8Robocup/firmware/Lidar/.pio/libdeps/freenove_esp32_wrover/HX711/src",
                     "C:/Users/tamag/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/newlib/platform_include",
                     "C:/Users/tamag/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/freertos/include",
@@ -474,9 +474,9 @@
                     "C:/Users/tamag/.platformio/packages/framework-arduinoespressif32/libraries/USB/src",
                     "C:/Users/tamag/.platformio/packages/framework-arduinoespressif32/libraries/Update/src",
                     "C:/Users/tamag/.platformio/packages/framework-arduinoespressif32/libraries/WebServer/src",
+                    "C:/Users/tamag/.platformio/packages/framework-arduinoespressif32/libraries/WiFi/src",
                     "C:/Users/tamag/.platformio/packages/framework-arduinoespressif32/libraries/WiFiClientSecure/src",
                     "C:/Users/tamag/.platformio/packages/framework-arduinoespressif32/libraries/WiFiProv/src",
-                    "C:/Users/tamag/.platformio/packages/framework-arduinoespressif32/libraries/Wire/src",
                     ""
                 ]
             },

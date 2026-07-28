@@ -1,43 +1,30 @@
 #include <Arduino.h>
-#include <HardwareSerial.h>
-#include <WiFi.h>
 #include <Wire.h>
-#include <esp_now.h>
-#include "ctrl.h"  // サーボ制御用ヘッダファイル(ctrl.h)の読み込み
+#include "ctrl.h"
+#include "gyro.h"
+#include "SCServo.h"
 
-// ====================================================================
-// 1. ピン・通信の設定
-// ====================================================================
+//======================================================
+// I2Cピン設定
+//======================================================
+// LiDAR用（Wireバス）
+#define LIDAR_SDA_PIN 12
+#define LIDAR_SCL_PIN 14
+#define LIDAR_I2C_ADDR 0x08
 
-// 【系統2】MPU6050姿勢計測（I2Cマスタ） -> Wire1 を使用
-#define MPU_SDA_PIN 26
-#define MPU_SCL_PIN 25
-#define MPU6050_ADDR 0x68
-#define MPU6050_SMPLRT_DIV 0x19
-#define MPU6050_CONFIG 0x1a
-#define MPU6050_GYRO_CONFIG 0x1b
-#define MPU6050_ACCEL_CONFIG 0x1c
-#define MPU6050_WHO_AM_I 0x75
-#define MPU6050_PWR_MGMT_1 0x6b
+// ジャイロ(MPU6050)用（Wire1バス）
+#define GYRO_SDA_PIN 21
+#define GYRO_SCL_PIN 22
+#define MPU_ADDR 0x68
 
-// MPU接続フラグ
-bool mpuConnected = false;
+// UnitV2 UART設定
+#define UNITV2_RX_PIN 16
+#define UNITV2_TX_PIN 17
+HardwareSerial UnitV2(2);
 
-// 【系統3】STS3032 サーボ制御（UART1）
-#define STS_RX_PIN 4
-#define STS_TX_PIN 2
-
-// 【系統4】UnitV2通信用（UART2）
-#define RXD2 16
-#define TXD2 17
-
-// ====================================================================
-// 2. データ構造体・グローバル変数の定義
-// ====================================================================
-// ctrl.h側でextern宣言した実体
-SCSCL sts3032;
-
-// 受信用の生のデータ構造体（16バイト）
+//======================================================
+// LiDAR受信データ構造体
+//======================================================
 struct LidarPacketRaw {
     uint16_t front1;
     uint16_t front2;
@@ -49,329 +36,261 @@ struct LidarPacketRaw {
     uint16_t left2;
 };
 
-// ロボット走行用（cm単位）のデータ構造体
-struct RobotLidarData {
-    float front1;
-    float front2;  // 前方 (355° / 5°)
-    float back1;
-    float back2;  // 後方 (175° / 185°)
-    float right1;
-    float right2;  // 右側 (85° / 95°)
-    float left1;
-    float left2;  // 左側 (265° / 275°)
-};
+LidarPacketRaw rcv_packet;
 
-// 各種センサー用変数
-volatile LidarPacketRaw volatile_raw_packet;
-volatile bool new_data_flag = false;
-RobotLidarData lidar;
+// 壁があると判定する距離の閾値
+const uint16_t WALL_THRESHOLD = 15;
 
-double offsetX = 0, offsetY = 0, offsetZ = 0;
-double gyro_angle_x = 0, gyro_angle_y = 0, gyro_angle_z = 0;
-float angleX, angleY, angleZ;
-float interval, preInterval;
-float acc_x, acc_y, acc_z, acc_angle_x, acc_angle_y;
-float gx, gy, gz, dpsX, dpsY, dpsZ;
+//======================================================
+// ジャイロ関連
+//======================================================
+float yaw = 0.0f;              // gyro.hでextern宣言、ctrl.cppからも参照される
+static float gyroZOffset = 0.0f;
+static unsigned long lastMicros = 0;
 
-// UnitV2受信用の非同期バッファ
-String v2_buffer = "";
+//======================================================
+// センサ接続フラグ
+//======================================================
+bool gyroAvailable = false;
+bool lidarAvailable = false;
 
-// --- 【追加】UnitV2 連続受信判定用の変数 ---
-char last_received_cmd = '\0';   // 最後に確定した文字を記憶
-int cmd_repeat_count = 0;        // 連続で受信した回数のカウンタ
-bool should_stop_by_v2 = false;  // UnitV2の条件達成による停止フラグ
+// UnitV2による停止処理用
+const int TARGET_REPEAT_COUNT = 5;  // 何回連続で同じ文字なら停止するか
+String last_unitv2_msg = "";
+int unitv2_repeat_count = 0;        // 同一文字の連続受信回数
+unsigned long motor_stop_until = 0; // 停止が解除されるまでの時間
 
-// ====================================================================
-// 3. MPU6050低レイヤ関数群
-// ====================================================================
-void writeMPU6050(byte reg, byte data) {
-    Wire1.beginTransmission(MPU6050_ADDR);
-    Wire1.write(reg);
-    Wire1.write(data);
-    Wire1.endTransmission();
-}
+//======================================================
+// ジャイロ(MPU6050)関連関数
+//======================================================
+bool gyroBegin() {
+    Wire1.begin(GYRO_SDA_PIN, GYRO_SCL_PIN, 100000);
+    Wire1.setTimeOut(50);  // 未接続時に長時間ブロックしないようにする
 
-byte readMPU6050(byte reg) {
-    Wire1.beginTransmission(MPU6050_ADDR);
-    Wire1.write(reg);
-    Wire1.endTransmission(true);
-    Wire1.requestFrom((uint8_t)MPU6050_ADDR, (size_t)1, true);
-    return Wire1.read();
-}
-
-// 加速度、ジャイロから角度を計算する関数
-void calcRotation() {
-
-    if(!mpuConnected){
-        return;
+    Wire1.beginTransmission(MPU_ADDR);
+    Wire1.write(0x6B);  // スリープ解除
+    Wire1.write(0x00);
+    bool ok = (Wire1.endTransmission(true) == 0);
+    if (!ok) {
+        Serial.println("【警告】21/22ピンに MPU6050 が見つかりません。");
     }
-    int16_t raw_acc_x, raw_acc_y, raw_acc_z, raw_t, raw_gyro_x, raw_gyro_y,
-        raw_gyro_z;
-
-    Wire1.beginTransmission(MPU6050_ADDR);
-    Wire1.write(0x3B);
-    Wire1.endTransmission(false);
-
-    Wire1.requestFrom((uint8_t)MPU6050_ADDR, (size_t)14, true);
-
-    raw_acc_x = Wire1.read() << 8 | Wire1.read();
-    raw_acc_y = Wire1.read() << 8 | Wire1.read();
-    raw_acc_z = Wire1.read() << 8 | Wire1.read();
-    raw_t = Wire1.read() << 8 | Wire1.read();
-    raw_gyro_x = Wire1.read() << 8 | Wire1.read();
-    raw_gyro_y = Wire1.read() << 8 | Wire1.read();
-    raw_gyro_z = Wire1.read() << 8 | Wire1.read();
-
-    acc_x = ((float)raw_acc_x) / 16384.0;
-    acc_y = ((float)raw_acc_y) / 16384.0;
-    acc_z = ((float)raw_acc_z) / 16384.0;
-
-    acc_angle_y = atan2(acc_x, acc_z + abs(acc_y)) * 360 / -2.0 / PI;
-    acc_angle_x = atan2(acc_y, acc_z + abs(acc_x)) * 360 / 2.0 / PI;
-
-    dpsX = ((float)raw_gyro_x) / 65.5;
-    dpsY = ((float)raw_gyro_y) / 65.5;
-    dpsZ = ((float)raw_gyro_z) / 65.5;
-
-    interval = millis() - preInterval;
-    preInterval = millis();
-
-    gyro_angle_x += (dpsX - offsetX) * (interval * 0.001);
-    gyro_angle_y += (dpsY - offsetY) * (interval * 0.001);
-    gyro_angle_z += (dpsZ - offsetZ) * (interval * 0.001);
-
-    angleX = (0.996 * gyro_angle_x) + (0.004 * acc_angle_x);
-    angleY = (0.996 * gyro_angle_y) + (0.004 * acc_angle_y);
-    angleZ = gyro_angle_z;
-
-    gyro_angle_x = angleX;
-    gyro_angle_y = angleY;
-    gyro_angle_z = angleZ;
+    lastMicros = micros();
+    return ok;
 }
 
-// ====================================================================
-// 3. LiDARデータ受信コールバック関数（I2Cスレーブ）
-// ====================================================================
-void OnDataRecv(const uint8_t *mac,
-                const uint8_t *incomingData,
-                int len)
-{
-    if (len != sizeof(LidarPacketRaw))
-        return;
+void gyroCalibrate() {
+    long sum = 0;
+    int validSamples = 0;
 
-    memcpy((void *)&volatile_raw_packet,
-           incomingData,
-           sizeof(LidarPacketRaw));
+    Serial.println("ジャイロ調整中...機体を動かさないでください...");
 
-    new_data_flag = true;
-}
-
-// ====================================================================
-// 4 UnitV2 シリアル受信関数 (ノンブロッキング)
-// ====================================================================
-void checkUnitV2() {
-    while (Serial2.available() > 0) {
-        char c = Serial2.read();
-        if (c == '\n') {
-            v2_buffer.trim();
-            if (v2_buffer.length() > 0) {
-                Serial.print("[UnitV2] ");
-                Serial.println(v2_buffer);
-
-                // 文字列の先頭の1文字を取り出す（例: "F" や "S\r" などに対応）
-                char cmd = v2_buffer.charAt(0);
-
-                // 対象 of 文字（F, S, O）のいずれかであるかチェック
-                if (cmd == 'F' || cmd == 'S' || cmd == 'O') {
-                    if (cmd == last_received_cmd) {
-                        // 前回と同じ文字ならカウントアップ
-                        cmd_repeat_count++;
-                    } else {
-                        // 新しい文字が来たらカウンタを1にリセットして文字を更新
-                        last_received_cmd = cmd;
-                        cmd_repeat_count = 1;
-                    }
-
-                    // 連続5回一致したら停止フラグを真にする
-                    if (cmd_repeat_count >= 5) {
-                        should_stop_by_v2 = true;
-                        Serial.print(
-                            ">> UnitV2 Stop triggered by 5 consecutive '");
-                        Serial.print(cmd);
-                        Serial.println("'s <<");
-                    }
-                } else {
-                    // F, S, O
-                    // 以外のデータが挟まった場合は連続が途切れたとみなしてリセット
-                    last_received_cmd = '\0';
-                    cmd_repeat_count = 0;
-                }
+    for (int i = 0; i < 500; i++) {
+        Wire1.beginTransmission(MPU_ADDR);
+        Wire1.write(0x47);
+        if (Wire1.endTransmission(false) == 0) {
+            uint8_t bytes = Wire1.requestFrom((uint8_t)MPU_ADDR, (size_t)2, (bool)true);
+            if (bytes == 2 && Wire1.available() >= 2) {
+                int16_t gz = Wire1.read() << 8 | Wire1.read();
+                sum += gz;
+                validSamples++;
             }
-            v2_buffer = "";
-        } else {
-            v2_buffer += c;
         }
+        delay(2);
+    }
+
+    if (validSamples > 0) {
+        gyroZOffset = (float)sum / validSamples;
+        Serial.printf("ジャイロ調整完了 (有効: %d/500)\n", validSamples);
+    } else {
+        gyroZOffset = 0.0f;
+        Serial.println("【エラー】ジャイロからデータを読めませんでした。");
     }
 }
 
-// ====================================================================
-// 5. ロボット走行制御メインロジック（連続時間・スムーズ走行版）
-// ====================================================================
-void controlRobot() {
-    // MPU6050が接続されている時だけ転倒判定
-    if (mpuConnected) {
-        if (abs(angleX) > 25.0 || abs(angleY) > 25.0) {
-            driveRobot(0, 0);
-            return;
+void gyroUpdate() {
+    unsigned long now = micros();
+    float dt = (now - lastMicros) / 1000000.0f;
+    lastMicros = now;
+
+    if (dt <= 0.0f || dt > 0.5f) return;
+
+    Wire1.beginTransmission(MPU_ADDR);
+    Wire1.write(0x47);
+    if (Wire1.endTransmission(false) != 0) return;
+
+    uint8_t bytes = Wire1.requestFrom((uint8_t)MPU_ADDR, (size_t)2, (bool)true);
+    if (bytes == 2 && Wire1.available() >= 2) {
+        int16_t gz = Wire1.read() << 8 | Wire1.read();
+        float rate = (gz - gyroZOffset) / 131.0f;
+
+        if (abs(rate) > 0.2f) {  // ドリフトノイズカット
+            yaw += rate * dt;
         }
+
+        if (yaw >= 360.0f) yaw -= 360.0f;
+        if (yaw < 0.0f)    yaw += 360.0f;
     }
-
-    // UnitV2による停止
-    if (should_stop_by_v2) {
-        driveRobot(0, 0);
-        return;
-    }
-
-    // 前方距離による減速
-    int base_speed = 600;
-    float min_front_dist = min(lidar.front1, lidar.front2);
-
-    if (min_front_dist < 40.0) {
-        float speed_rate = (min_front_dist - 15.0) / (40.0 - 15.0);
-        if (speed_rate < 0.0)
-            speed_rate = 0.0;
-        base_speed = (int)(base_speed * speed_rate);
-    }
-
-    if (min_front_dist <= 15.0) {
-        driveRobot(0, 0);
-        return;
-    }
-
-    // 壁との平行を保つ
-    float right_error = lidar.right1 - lidar.right2;
-    float Kp = 40.0;
-    int steering_output = (int)(right_error * Kp);
-
-    int left_motor_speed = base_speed + steering_output;
-    int right_motor_speed = base_speed - steering_output;
-
-    driveRobot(left_motor_speed, right_motor_speed);
 }
 
-// ====================================================================
-// 6. セットアップ
-// ====================================================================
+//======================================================
+// モーター停止関数
+//======================================================
+void stopMotors() {
+    Serial.println("モーター停止");
+    stop();  // ctrl.cppのstop()を使用
+}
+
+void displaySensorData() {
+    Serial.print("【SENSOR】 ");
+    if (lidarAvailable) {
+        Serial.printf("FRONT: %3d, %3d | ", rcv_packet.front1, rcv_packet.front2);
+        Serial.printf("RIGHT: %3d, %3d | ", rcv_packet.right1, rcv_packet.right2);
+        Serial.printf("BACK:  %3d, %3d | ", rcv_packet.back1, rcv_packet.back2);
+        Serial.printf("LEFT:  %3d, %3d | ", rcv_packet.left1, rcv_packet.left2);
+    } else {
+        Serial.print("LiDAR未接続 | ");
+    }
+
+    if (gyroAvailable) {
+        Serial.printf("YAW: %5.1f deg\n", yaw);
+    } else {
+        Serial.println("YAW: N/A (ジャイロ未接続)");
+    }
+}
+
 void setup() {
     Serial.begin(115200);
-    while (!Serial)
-        ;
+    delay(1000);
 
-    Serial2.begin(115200, SERIAL_8N1, RXD2, TXD2);
-    Serial.println("Serial2 (UnitV2) initialized.");
+    // 【修正】ctrlLoop() ではなく ctrlInit() を呼び出して Serial1 とサーボを初期化
+    ctrlInit();
 
-    WiFi.mode(WIFI_STA);
+    // I2C開始（LiDAR用：SDA=12, SCL=14）
+    Wire.begin(LIDAR_SDA_PIN, LIDAR_SCL_PIN, 100000);
+    Wire.setTimeOut(50);
 
-    if (esp_now_init() != ESP_OK) {
-        Serial.println("ESP-NOW Init Failed");
-        while (1)
-            ;
-    }
+    // UART2開始（UnitV2）
+    UnitV2.begin(115200, SERIAL_8N1, UNITV2_RX_PIN, UNITV2_TX_PIN);
 
-    esp_now_register_recv_cb(OnDataRecv);
+    rcv_packet = {0, 0, 0, 0, 0, 0, 0, 0};
 
-    Serial.println("ESP-NOW Ready");
-
-    Wire1.begin(MPU_SDA_PIN, MPU_SCL_PIN);
-
-    Wire1.beginTransmission(MPU6050_ADDR);
-
-    if (Wire1.endTransmission() == 0 && readMPU6050(MPU6050_WHO_AM_I) == 0x68) {
-        mpuConnected = true;
-        Serial.println("MPU6050 Found");
-
-        writeMPU6050(MPU6050_SMPLRT_DIV, 0x00);
-        writeMPU6050(MPU6050_CONFIG, 0x00);
-        writeMPU6050(MPU6050_GYRO_CONFIG, 0x08);
-        writeMPU6050(MPU6050_ACCEL_CONFIG, 0x00);
-        writeMPU6050(MPU6050_PWR_MGMT_1, 0x01);
+    // ジャイロ初期化・接続確認
+    gyroAvailable = gyroBegin();
+    if (gyroAvailable) {
+        Serial.println("ジャイロ検出：OK");
+        Serial.println("キャリブレーション中");
+        gyroCalibrate();
+        Serial.println("完了");
     } else {
-        Serial.println("MPU6050 Not Found");
+        Serial.println("ジャイロ未検出：ジャイロ関連の処理をスキップします");
     }
-
-    initStsServos(&Serial1, 1000000, STS_RX_PIN, STS_TX_PIN);
-
-    delay(100);
-
-    if (mpuConnected) {
-        Serial.print("Calculate Calibration");
-        for (int i = 0; i < 3000; i++) {
-            int16_t raw_acc_x, raw_acc_y, raw_acc_z, raw_t, raw_gyro_x,
-                raw_gyro_y, raw_gyro_z;
-
-            Wire1.beginTransmission(MPU6050_ADDR);
-            Wire1.write(0x3B);
-            Wire1.endTransmission(false);
-            Wire1.requestFrom((uint8_t)MPU6050_ADDR, (size_t)14, true);
-
-            raw_acc_x = Wire1.read() << 8 | Wire1.read();
-            raw_acc_y = Wire1.read() << 8 | Wire1.read();
-            raw_acc_z = Wire1.read() << 8 | Wire1.read();
-            raw_t = Wire1.read() << 8 | Wire1.read();
-            raw_gyro_x = Wire1.read() << 8 | Wire1.read();
-            raw_gyro_y = Wire1.read() << 8 | Wire1.read();
-            raw_gyro_z = Wire1.read() << 8 | Wire1.read();
-
-            offsetX += ((float)raw_gyro_x) / 65.5;
-            offsetY += ((float)raw_gyro_y) / 65.5;
-            offsetZ += ((float)raw_gyro_z) / 65.5;
-            if (i % 1000 == 0)
-                Serial.print(".");
-        }
-        Serial.println();
-
-        offsetX /= 3000;
-        offsetY /= 3000;
-        offsetZ /= 3000;
-    }
-
-    lidar = {400.0, 400.0, 400.0, 400.0, 400.0, 400.0, 400.0, 400.0};
-    preInterval = millis();
-
-    Serial.println(
-        "システム起動成功 (LiDAR I2C + MPU6050 I2C + STS3032 車輪制御 + UnitV2 "
-        "UART)");
 }
 
-// ====================================================================
-// 7. メインループ
-// ====================================================================
 void loop() {
-
-    if (mpuConnected) {
-        calcRotation();
+    // 1. 最優先：ジャイロが接続されていれば最新の「yaw」をキープする
+    if (gyroAvailable) {
+        gyroUpdate();
     }
 
-    if (new_data_flag) {
-        LidarPacketRaw raw;
+    // 2. モーターが停止中or走行中判定
+    bool is_suspended = (millis() < motor_stop_until);
 
-        noInterrupts();
-        memcpy(&raw, (const void*)&volatile_raw_packet, sizeof(LidarPacketRaw));
-        new_data_flag = false;
-        interrupts();
-
-        lidar.front1 = (raw.front1 <= 10) ? 400.0 : (float)raw.front1 / 10.0;
-        lidar.front2 = (raw.front2 <= 10) ? 400.0 : (float)raw.front2 / 10.0;
-        lidar.back1  = (raw.back1  <= 10) ? 400.0 : (float)raw.back1  / 10.0;
-        lidar.back2  = (raw.back2  <= 10) ? 400.0 : (float)raw.back2  / 10.0;
-        lidar.right1 = (raw.right1 <= 10) ? 400.0 : (float)raw.right1 / 10.0;
-        lidar.right2 = (raw.right2 <= 10) ? 400.0 : (float)raw.right2 / 10.0;
-        lidar.left1  = (raw.left1  <= 10) ? 400.0 : (float)raw.left1  / 10.0;
-        lidar.left2  = (raw.left2  <= 10) ? 400.0 : (float)raw.left2  / 10.0;
+    if (is_suspended) {
+        stopMotors();
+    } else {
+        // 3. 最優先：旋回や移動のモーター監視処理を回す
+        ctrlLoop();
     }
 
-    checkUnitV2();
-    controlRobot();
+    // LiDARデータの読み込み (I2C)
+    {
+        uint8_t bytesReceived =
+            Wire.requestFrom(LIDAR_I2C_ADDR, sizeof(rcv_packet));
+        if (bytesReceived == sizeof(rcv_packet)) {
+            uint8_t* p = (uint8_t*)&rcv_packet;
+            for (size_t i = 0; i < sizeof(rcv_packet); i++) {
+                p[i] = Wire.read();
+            }
+            lidarAvailable = true;
+        } else {
+            // 通信エラー時
+            Serial.println("I2C 通信エラー: データ未受信またはピンの接続不良");
+            rcv_packet = {999, 999, 999, 999, 999, 999, 999, 999};
+            lidarAvailable = false;
+        }
+    }
+
+    displaySensorData();
+
+    // 【アルゴリズム】左手法の実装
+    // 【修正】ctrl.cppのステートマシン関数（turnLeft90等）を呼ぶように変更
+    if (state == IDLE && !is_suspended && lidarAvailable) {
+        bool hasLeftWall =
+            ((rcv_packet.left1 + rcv_packet.left2) / 2) < WALL_THRESHOLD;
+        bool hasFrontWall =
+            ((rcv_packet.front1 + rcv_packet.front2) / 2) < WALL_THRESHOLD;
+        bool hasRightWall =
+            ((rcv_packet.right1 + rcv_packet.right2) / 2) < WALL_THRESHOLD;
+
+        if (!hasLeftWall) {
+            Serial.println("[左手法] 左に壁がないので90度左旋回します。");
+            turnLeft90();
+        } else if (!hasFrontWall) {
+            Serial.println("[左手法] 前が進めるので1マス前進します。");
+            forwardTile();
+        } else if (!hasRightWall) {
+            Serial.println("[左手法] 右しか空いていないので90度右旋回します。");
+            turnRight90();
+        } else {
+            Serial.println("[左手法] 行き止まりなので180度反転します。");
+            turnBack180();
+        }
+    }
+
+    // UnitV2の処理 (UART) - 非ブロッキング文字受信方式
+    static String unitv2_buffer = "";
+
+    while (UnitV2.available()) {
+        char c = (char)UnitV2.read();
+        if (c == '\r') continue;
+
+        if (c == '\n') {
+            unitv2_buffer.trim();
+            if (unitv2_buffer.length() > 0) {
+                Serial.print("UnitV2 : ");
+                Serial.println(unitv2_buffer);
+
+                // 同一メッセージの連続受信判定
+                if (unitv2_buffer == last_unitv2_msg) {
+                    unitv2_repeat_count++;
+                } else {
+                    last_unitv2_msg = unitv2_buffer;
+                    unitv2_repeat_count = 1;
+                }
+
+                // 指定回数(n回)連続で一致した場合
+                if (unitv2_repeat_count >= TARGET_REPEAT_COUNT) {
+                    Serial.printf(
+                        "★ [ALERT] UnitV2から '%s' "
+                        "が%d回連続で届きました。5秒間モーターを停止します。\n",
+                        unitv2_buffer.c_str(), TARGET_REPEAT_COUNT);
+
+                    motor_stop_until = millis() + 5000;
+
+                    unitv2_repeat_count = 0;
+                    last_unitv2_msg = "";
+
+                    stopMotors();
+                }
+            }
+            unitv2_buffer = "";
+        } else {
+            unitv2_buffer += c;
+            if (unitv2_buffer.length() > 128) {
+                unitv2_buffer = "";
+            }
+        }
+    }
 
     delay(10);
 }
