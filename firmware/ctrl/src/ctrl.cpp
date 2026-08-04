@@ -9,8 +9,8 @@
 
 // サーボ回転方向（Time値）※仕様3・4より
 static const uint16_t TIME_STOP     = 0;
-static const uint16_t TIME_FORWARD  = 500;
-static const uint16_t TIME_BACKWARD = 1500;
+static const uint16_t TIME_FORWARD  = 300;
+static const uint16_t TIME_BACKWARD = 1300;
 
 // 壁判定しきい値[cm]（仕様8）
 static const uint16_t WALL_THRESHOLD_CM = 15;
@@ -196,15 +196,29 @@ void posture()
 //======================================================
 void turnLeft90()
 {
+    // 現在のyawを基準に、左へ90度
     targetYaw = yaw + 90.0f;
-    if (targetYaw >= 360.0f) targetYaw -= 360.0f;
+
+    // 0～360度に収める
+    if (targetYaw >= 360.0f) {
+        targetYaw -= 360.0f;
+    }
+
+    // 左旋回状態にする
     state = TURN_LEFT;
 }
 
 void turnRight90()
 {
+    // 現在のyawを基準に、右へ90度
     targetYaw = yaw - 90.0f;
-    if (targetYaw < 0.0f) targetYaw += 360.0f;
+
+    // 0～360度に収める
+    if (targetYaw < 0.0f) {
+        targetYaw += 360.0f;
+    }
+
+    // 右旋回状態にする
     state = TURN_RIGHT;
 }
 
@@ -227,26 +241,45 @@ void forwardTile()
 //======================================================
 void ctrlLoop()
 {
+        if (avgFront() <= FRONT_STOP_DISTANCE_CM &&
+        state != TURN_LEFT &&
+        state != TURN_RIGHT &&
+        state != TURN_BACK)
+    {
+        stop();
+        state = IDLE;
+        return;
+    }
+
     switch (state) {
 
     case IDLE:
         break;
 
     case TURN_LEFT:
-        turnLeft();
-        if (fabs(angleError(targetYaw, yaw)) < YAW_TOLERANCE_DEG) {
-            stop();
-            state = IDLE;
-        }
-        break;
 
-    case TURN_RIGHT:
-        turnRight();
-        if (fabs(angleError(targetYaw, yaw)) < YAW_TOLERANCE_DEG) {
-            stop();
-            state = IDLE;
-        }
-        break;
+    turnLeft();
+
+    // 目標角度との差が2度以内なら停止
+    if (fabs(angleError(targetYaw, yaw)) <= YAW_TOLERANCE_DEG) {
+        stop();
+        state = IDLE;
+    }
+
+    break;
+
+
+case TURN_RIGHT:
+
+    turnRight();
+
+    // 目標角度との差が2度以内なら停止
+    if (fabs(angleError(targetYaw, yaw)) <= YAW_TOLERANCE_DEG) {
+        stop();
+        state = IDLE;
+    }
+
+    break;
 
     case TURN_BACK:
         turnRight();   // 180°回転は右回りに統一

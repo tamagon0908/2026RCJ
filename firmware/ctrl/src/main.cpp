@@ -123,7 +123,7 @@ void gyroUpdate() {
         int16_t gz = Wire1.read() << 8 | Wire1.read();
         float rate = (gz - gyroZOffset) / 131.0f;
 
-        if (abs(rate) > 0.2f) {  // ドリフトノイズカット
+        if (fabs(rate) > 0.2f) {  // ドリフトノイズカット
             yaw += rate * dt;
         }
 
@@ -177,6 +177,7 @@ void setup() {
     // ジャイロ初期化・接続確認
     gyroAvailable = gyroBegin();
     if (gyroAvailable) {
+        stopMotors();   // ジャイロキャリブレーション中はモーターを停止
         Serial.println("ジャイロ検出：OK");
         Serial.println("キャリブレーション中");
         gyroCalibrate();
@@ -192,17 +193,7 @@ void loop() {
         gyroUpdate();
     }
 
-    // 2. モーターが停止中or走行中判定
-    bool is_suspended = (millis() < motor_stop_until);
-
-    if (is_suspended) {
-        stopMotors();
-    } else {
-        // 3. 最優先：旋回や移動のモーター監視処理を回す
-        ctrlLoop();
-    }
-
-    // LiDARデータの読み込み (I2C)
+     // LiDARデータの読み込み (I2C)
     {
         uint8_t bytesReceived =
             Wire.requestFrom(LIDAR_I2C_ADDR, sizeof(rcv_packet));
@@ -219,6 +210,17 @@ void loop() {
             lidarAvailable = false;
         }
     }
+
+    // 2. モーターが停止中or走行中判定
+    bool is_suspended = (millis() < motor_stop_until);
+
+    if (is_suspended) {
+        stopMotors();
+    } else {
+        // 3. 最優先：旋回や移動のモーター監視処理を回す
+        ctrlLoop();
+    }
+
 
     displaySensorData();
 
