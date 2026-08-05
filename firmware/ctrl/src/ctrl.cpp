@@ -160,7 +160,7 @@ static void forwardWithCorrection()
     if (correction < -STRAIGHT_CORRECTION_MAX) correction = -STRAIGHT_CORRECTION_MAX;
 
     uint16_t leftTime  = clampTime((int32_t)TIME_FORWARD + (int32_t)correction);
-    uint16_t rightTime = clampTime((int32_t)TIME_FORWARD - (int32_t)correction);
+    uint16_t rightTime = clampTime((int32_t)TIME_BACKWARD - (int32_t)correction);
 
     writeAll(leftTime, rightTime);
 }
