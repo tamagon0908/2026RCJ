@@ -156,7 +156,12 @@ void updateI2CBuffer() {
     memcpy((void*)&i2c_regs, &send_packet, sizeof(send_packet));
     interrupts();
 
-    Serial.printf("Buffer Updated -> F:%d,%d | R:%d,%d\n", i2c_regs.front1, i2c_regs.front2, i2c_regs.right1, i2c_regs.right2);
+    // Serial.printf("Buffer Updated -> F:%d,%d | R:%d,%d\n", i2c_regs.front1, i2c_regs.front2, i2c_regs.right1, i2c_regs.right2);
+        Serial.printf("Front : %4d cm | %4d cm\n", i2c_regs.front1, i2c_regs.front2);
+    Serial.printf("Right : %4d cm | %4d cm\n", i2c_regs.right1, i2c_regs.right2);
+    Serial.printf("Back  : %4d cm | %4d cm\n", i2c_regs.back1,  i2c_regs.back2);
+    Serial.printf("Left  : %4d cm | %4d cm\n", i2c_regs.left1,  i2c_regs.left2);
+    Serial.println("-----------------------------");
 
     count_front = count_right = count_back = count_left = 0;
     send_packet = {0, 0, 0, 0, 0, 0, 0, 0};
