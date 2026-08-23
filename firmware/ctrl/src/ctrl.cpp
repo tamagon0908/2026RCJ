@@ -1,5 +1,6 @@
 #include "ctrl.h"
 #include "gyro.h"
+#include <Arduino.h>
 #include <SCServo.h>
 #include <math.h>
 
@@ -16,7 +17,7 @@ static const uint16_t TIME_BACKWARD = 1300;
 static const uint16_t WALL_THRESHOLD_CM = 15;
 
 // 前壁停止距離[cm]（仕様13）
-static const uint16_t FRONT_STOP_DISTANCE_CM = 10;
+static const uint16_t FRONT_STOP_DISTANCE_CM = 17;
 
 // 迷路1マスのサイズ[cm]（仕様7）
 // → 前壁が無い区間でも「進みすぎ」ないようにするフォールバック用
@@ -26,7 +27,7 @@ static const uint16_t TILE_SIZE_CM = 30;
 static const float YAW_TOLERANCE_DEG = 2.0f;
 
 // 姿勢補正の許容誤差（仕様14の error≈0 の範囲）
-static const int POSTURE_ALLOW_ERROR = 5;
+static const int POSTURE_ALLOW_ERROR = 1;
 
 // 直進中の補正ゲイン・上限（仕様12「gyro補正→壁補正→前進」を実装するために追加）
 // ※符号・ゲインは実機で要調整
@@ -35,6 +36,9 @@ static const float STRAIGHT_WALL_KP           = 3.0f;  // 距離差1cmあたり�
 static const uint16_t STRAIGHT_CORRECTION_MAX = 150;   // 補正量の上限[Time]
 
 // サーボ用UARTのTXピン（RXは未使用のため-1固定）
+static const bool DEBUG_MOTOR_OUTPUT = true;
+static const uint32_t DEBUG_MOTOR_OUTPUT_INTERVAL_MS = 100;
+
 static const int TX_PIN = 27;
 
 //======================================================
@@ -66,6 +70,7 @@ void ctrlInit()
 RobotState state = IDLE;
 static float targetYaw   = 0.0f;
 static float straightYaw = 0.0f;   // 直進開始時のyaw（直進中に維持する基準角）
+static float turnStartYaw = 0.0f;
 static uint16_t startFrontDistance = 0;
 
 // サーボID（仕様2）
@@ -81,6 +86,14 @@ static float angleError(float target, float current)
     while (error > 180.0f)  error -= 360.0f;
     while (error < -180.0f) error += 360.0f;
     return error;
+}
+
+static float clockwiseDelta(float start, float current)
+{
+    float delta = start - current;
+    while (delta < 0.0f)    delta += 360.0f;
+    while (delta >= 360.0f) delta -= 360.0f;
+    return delta;
 }
 
 static uint16_t avgFront() { return (rcv_packet.front1 + rcv_packet.front2) / 2; }
@@ -101,6 +114,11 @@ static void writeAll(uint16_t leftTime, uint16_t rightTime)
 {
     servo.WritePos(LEFT_ID,  0, leftTime,  0);
     servo.WritePos(RIGHT_ID, 0, rightTime, 0);
+    // デバッグ用に出力
+    Serial.print("L:"); 
+    Serial.print(leftTime);
+    Serial.print("  R:");
+    Serial.println(rightTime);
 }
 
 void stop()
@@ -159,10 +177,29 @@ static void forwardWithCorrection()
     if (correction > STRAIGHT_CORRECTION_MAX)  correction = STRAIGHT_CORRECTION_MAX;
     if (correction < -STRAIGHT_CORRECTION_MAX) correction = -STRAIGHT_CORRECTION_MAX;
 
-    uint16_t leftTime  = clampTime((int32_t)TIME_FORWARD + (int32_t)correction);
-    uint16_t rightTime = clampTime((int32_t)TIME_BACKWARD - (int32_t)correction);
+    uint16_t leftOutputTime  = clampTime((int32_t)TIME_FORWARD + (int32_t)correction);
+    uint16_t rightOutputTime = clampTime((int32_t)TIME_BACKWARD - (int32_t)correction);
 
-    writeAll(leftTime, rightTime);
+    if (DEBUG_MOTOR_OUTPUT) {
+        static uint32_t lastDebugMs = 0;
+        uint32_t nowMs = millis();
+
+        if (nowMs - lastDebugMs >= DEBUG_MOTOR_OUTPUT_INTERVAL_MS) {
+            lastDebugMs = nowMs;
+            Serial.printf(
+                "[MOTOR] left=%u right=%u correction=%.1f yawErr=%.1f L=%u R=%u hasL=%d hasR=%d\n",
+                leftOutputTime,
+                rightOutputTime,
+                correction,
+                yawErr,
+                avgLeft(),
+                avgRight(),
+                hasL,
+                hasR);
+        }
+    }
+
+    writeAll(leftOutputTime, rightOutputTime);
 }
 
 //======================================================
@@ -197,7 +234,7 @@ void posture()
 void turnLeft90()
 {
     // 現在のyawを基準に、左へ90度
-    targetYaw = yaw + 90.0f;
+    targetYaw = yaw + 85.0f;
 
     // 0～360度に収める
     if (targetYaw >= 360.0f) {
@@ -211,7 +248,7 @@ void turnLeft90()
 void turnRight90()
 {
     // 現在のyawを基準に、右へ90度
-    targetYaw = yaw - 90.0f;
+    targetYaw = yaw - 85.0f;
 
     // 0～360度に収める
     if (targetYaw < 0.0f) {
@@ -224,6 +261,7 @@ void turnRight90()
 
 void turnBack180()
 {
+    turnStartYaw = yaw;
     targetYaw = yaw + 180.0f;
     if (targetYaw >= 360.0f) targetYaw -= 360.0f;
     state = TURN_BACK;
@@ -283,7 +321,7 @@ case TURN_RIGHT:
 
     case TURN_BACK:
         turnRight();   // 180°回転は右回りに統一
-        if (fabs(angleError(targetYaw, yaw)) < YAW_TOLERANCE_DEG) {
+        if (clockwiseDelta(turnStartYaw, yaw) >= (180.0f - YAW_TOLERANCE_DEG)) {
             stop();
             state = IDLE;
         }
@@ -292,7 +330,7 @@ case TURN_RIGHT:
     case FORWARD_TILE: {
         uint16_t nowFront = avgFront();
 
-        // 停止条件1：前壁が約10cmまで近づいた（仕様13）
+        // 停止条件1：前壁が約15cmまで近づいた（仕様13）
         bool frontWallClose = (nowFront <= FRONT_STOP_DISTANCE_CM);
 
         // 停止条件2：前壁が無い区間のフォールバック（1マス分=約30cm進んだ）

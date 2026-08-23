@@ -39,7 +39,7 @@ struct LidarPacketRaw {
 LidarPacketRaw rcv_packet;
 
 // 壁があると判定する距離の閾値
-const uint16_t WALL_THRESHOLD = 15;
+const uint16_t WALL_THRESHOLD = 16;
 
 //======================================================
 // ジャイロ関連
@@ -158,6 +158,18 @@ void displaySensorData() {
     }
 }
 
+bool isLidarPacketReady() {
+    return lidarAvailable &&
+           rcv_packet.front1 != 0 &&
+           rcv_packet.front2 != 0 &&
+           rcv_packet.back1  != 0 &&
+           rcv_packet.back2  != 0 &&
+           rcv_packet.right1 != 0 &&
+           rcv_packet.right2 != 0 &&
+           rcv_packet.left1  != 0 &&
+           rcv_packet.left2  != 0;
+}
+
 void setup() {
     Serial.begin(115200);
     delay(1000);
@@ -213,8 +225,11 @@ void loop() {
 
     // 2. モーターが停止中or走行中判定
     bool is_suspended = (millis() < motor_stop_until);
+    bool lidarReady = isLidarPacketReady();
 
     if (is_suspended) {
+        stopMotors();
+    } else if (!lidarReady) {
         stopMotors();
     } else {
         // 3. 最優先：旋回や移動のモーター監視処理を回す
@@ -226,7 +241,7 @@ void loop() {
 
     // 【アルゴリズム】左手法の実装
     // 【修正】ctrl.cppのステートマシン関数（turnLeft90等）を呼ぶように変更
-    if (state == IDLE && !is_suspended && lidarAvailable) {
+    if (state == IDLE && !is_suspended && lidarReady) {
         bool hasLeftWall =
             ((rcv_packet.left1 + rcv_packet.left2) / 2) < WALL_THRESHOLD;
         bool hasFrontWall =
