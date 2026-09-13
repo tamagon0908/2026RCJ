@@ -40,6 +40,7 @@ LidarPacketRaw rcv_packet;
 
 // 壁があると判定する距離の閾値
 const uint16_t WALL_THRESHOLD = 16;
+const uint16_t WALL_THRESHOLD_LEFT2 = 11; //TOFだけ短め
 
 //======================================================
 // ジャイロ関連
@@ -56,7 +57,7 @@ bool lidarAvailable = false;
 
 // UnitV2による停止処理用
 const int TARGET_REPEAT_COUNT = 5;  // 何回連続で同じ文字なら停止するか
-String last_unitv2_msg = "";
+String last_unitv2_msg = "";        // 最後に受信したUnitV2の文字列
 int unitv2_repeat_count = 0;        // 同一文字の連続受信回数
 unsigned long motor_stop_until = 0; // 停止が解除されるまでの時間
 
@@ -243,7 +244,7 @@ void loop() {
     // 【修正】ctrl.cppのステートマシン関数（turnLeft90等）を呼ぶように変更
     if (state == IDLE && !is_suspended && lidarReady) {
         bool hasLeftWall =
-            ((rcv_packet.left1 + rcv_packet.left2) / 2) < WALL_THRESHOLD;
+            (rcv_packet.left1 < WALL_THRESHOLD || rcv_packet.left2 < WALL_THRESHOLD_LEFT2);
         bool hasFrontWall =
             ((rcv_packet.front1 + rcv_packet.front2) / 2) < WALL_THRESHOLD;
         bool hasRightWall =
