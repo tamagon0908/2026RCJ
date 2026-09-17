@@ -1,16 +1,13 @@
 #include <Arduino.h>
 //ピン変更　MTOF_SDA_PIN = 25, MTOF_SCL_PIN = 26 / 
-
 #include <HardwareSerial.h>
 #include <Wire.h>
 #include <math.h>
-
 //======================================================
 // YDLIDAR
 //======================================================
 #define LIDAR_RX_PIN 16
 #define LIDAR_TX_PIN 17
-
 //======================================================
 // I2C
 //======================================================
@@ -19,24 +16,19 @@
 
 // 外部ESP32などから読まれるI2Cスレーブアドレス
 #define I2C_SLAVE_ADDR 0x08
-
 //======================================================
 // MTOF171000C0
 //======================================================
 #define MTOF_ADDRESS 0x52
-
 // MTOF制御用ピン
 #define CONTROL_PIN 18
-
 //MTOF_SDA SCLピン
 #define MTOF_SDA_PIN 25
 #define MTOF_SCL_PIN 26
-
 //======================================================
 // Serial
 //======================================================
 HardwareSerial LidarSerial(2);
-
 //======================================================
 // 送信データ構造体
 //
@@ -306,9 +298,9 @@ void parseLidarByte(uint8_t b) {
 // LiDARパケット処理
 //======================================================
 void processPacket() {
-    if ((ct & 0x01) == 1) {
-        updateI2CBuffer();
-    }
+    // if ((ct & 0x01) == 1) {
+    //     updateI2CBuffer();
+    // }  
 
     float angle_fsa = (float)(fsa >> 1) / 64.0;
 
@@ -423,6 +415,10 @@ void processPacket() {
             }
         }
     }
+
+      if ((ct & 0x01) == 1) {
+        updateI2CBuffer();
+    }
 }
 
 //======================================================
@@ -485,7 +481,7 @@ uint16_t readMTOFDistance(byte reg) {
     uint16_t result = 0;
 
     // レジスタ指定
-    Wire1.beginTransmission(MTOF_ADDRESS);
+    Wire1.beginTransmission((uint8_t)MTOF_ADDRESS);
 
     Wire1.write(reg);
 
@@ -497,7 +493,7 @@ uint16_t readMTOFDistance(byte reg) {
     }
 
     // 2バイト読み取り
-    uint8_t received = Wire1.requestFrom(MTOF_ADDRESS, (uint8_t)2);
+    uint8_t received = Wire1.requestFrom((uint8_t)MTOF_ADDRESS, (uint8_t)2);
 
     if (received != 2) {
         Serial.println("MTOF I2C receive error");

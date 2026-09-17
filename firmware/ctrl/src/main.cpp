@@ -13,8 +13,9 @@
 #define LIDAR_I2C_ADDR 0x08
 
 // ジャイロ(MPU6050)用（Wire1バス）
-#define GYRO_SDA_PIN 21
-#define GYRO_SCL_PIN 22
+#define GYRO_SDA_PIN 16
+
+#define GYRO_SCL_PIN 17
 #define MPU_ADDR 0x68
 
 // UnitV2 UART設定
@@ -73,7 +74,7 @@ bool gyroBegin() {
     Wire1.write(0x00);
     bool ok = (Wire1.endTransmission(true) == 0);
     if (!ok) {
-        Serial.println("【警告】21/22ピンに MPU6050 が見つかりません。");
+        Serial.println("【警告】16/17ピンに MPU6050 が見つかりません。");
     }
     lastMicros = micros();
     return ok;
