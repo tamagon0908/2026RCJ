@@ -14,14 +14,25 @@
 
 // ジャイロ(MPU6050)用（Wire1バス）
 #define GYRO_SDA_PIN 16
-
 #define GYRO_SCL_PIN 17
 #define MPU_ADDR 0x68
 
 // UnitV2 UART設定
-#define UNITV2_RX_PIN 16
-#define UNITV2_TX_PIN 17
+#define UNITV2_RX_PIN 21
+#define UNITV2_TX_PIN 22
 HardwareSerial UnitV2(2);
+
+
+// LiDAR通信エラー管理
+uint8_t lidarErrorCount = 0;
+const uint8_t LIDAR_ERROR_LIMIT = 3;
+
+// 停止指令の重複送信防止
+bool lidarFaultStopSent = false;
+
+// センサー表示の周期管理
+unsigned long lastDisplayMs = 0;
+const unsigned long DISPLAY_INTERVAL = 200;
 
 //======================================================
 // LiDAR受信データ構造体
@@ -207,36 +218,83 @@ void loop() {
         gyroUpdate();
     }
 
-     // LiDARデータの読み込み (I2C)
+
+    // LiDARデータの読み込み
     {
         uint8_t bytesReceived =
             Wire.requestFrom(LIDAR_I2C_ADDR, sizeof(rcv_packet));
+
         if (bytesReceived == sizeof(rcv_packet)) {
+
             uint8_t* p = (uint8_t*)&rcv_packet;
+
             for (size_t i = 0; i < sizeof(rcv_packet); i++) {
                 p[i] = Wire.read();
             }
+
+            lidarErrorCount = 0;
             lidarAvailable = true;
+
         } else {
-            // 通信エラー時
-            Serial.println("I2C 通信エラー: データ未受信またはピンの接続不良");
-            rcv_packet = {999, 999, 999, 999, 999, 999, 999, 999};
-            lidarAvailable = false;
+
+            lidarErrorCount++;
+
+            Serial.printf(
+                "[LiDAR ERROR] %d/%d\n",
+                lidarErrorCount,
+                LIDAR_ERROR_LIMIT
+            );
+
+            // 3回連続失敗した場合のみ通信異常とする
+            if (lidarErrorCount >= LIDAR_ERROR_LIMIT) {
+                lidarAvailable = false;
+            }
         }
     }
 
-    // 2. モーターが停止中or走行中判定
+
+    // // 2. モーターが停止中or走行中判定
+    // bool is_suspended = (millis() < motor_stop_until);
+    // bool lidarReady = isLidarPacketReady();
+
+    // if (is_suspended) {
+    //     stopMotors();
+    // } else if (!lidarReady) {
+    //     stopMotors();
+    // } else {
+    //     // 3. 最優先：旋回や移動のモーター監視処理を回す
+    //     ctrlLoop();
+    // }
+
+
+    // モーター制御
     bool is_suspended = (millis() < motor_stop_until);
     bool lidarReady = isLidarPacketReady();
 
     if (is_suspended) {
         stopMotors();
+
     } else if (!lidarReady) {
-        stopMotors();
+
+        if (!lidarFaultStopSent) {
+            Serial.println("[ERROR] LiDAR異常：モーター停止");
+
+            stopMotors();
+            state = IDLE;
+
+            lidarFaultStopSent = true;
+        }
+
     } else {
-        // 3. 最優先：旋回や移動のモーター監視処理を回す
+
+        if (lidarFaultStopSent) {
+            Serial.println("[RECOVERY] LiDAR通信復旧");
+            lidarFaultStopSent = false;
+        }
+
         ctrlLoop();
     }
+
 
 
     displaySensorData();

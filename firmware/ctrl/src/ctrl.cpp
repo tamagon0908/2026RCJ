@@ -39,7 +39,9 @@ static const float STRAIGHT_WALL_KP = 3.0f;  // 距離差1cmあたりの補正�
 static const uint16_t STRAIGHT_CORRECTION_MAX = 150;  // 補正量の上限[Time]
 
 // サーボ用UARTのTXピン（RXは未使用のため-1固定）
+//static const bool DEBUG_MOTOR_OUTPUT = true;
 static const bool DEBUG_MOTOR_OUTPUT = true;
+
 static const uint32_t DEBUG_MOTOR_OUTPUT_INTERVAL_MS = 100;
 
 static const int TX_PIN = 27;
@@ -125,14 +127,19 @@ static uint16_t clampTime(int32_t t) {
 //======================================================
 // 4輪制御（生のサーボ出力）
 //======================================================
+// static void writeAll(uint16_t leftTime, uint16_t rightTime) {
+//     servo.WritePos(LEFT_ID, 0, leftTime, 0);
+//     servo.WritePos(RIGHT_ID, 0, rightTime, 0);
+//     // デバッグ用に出力
+//     Serial.print("L:");
+//     Serial.print(leftTime);
+//     Serial.print("  R:");
+//     Serial.println(rightTime);
+// }
+
 static void writeAll(uint16_t leftTime, uint16_t rightTime) {
     servo.WritePos(LEFT_ID, 0, leftTime, 0);
     servo.WritePos(RIGHT_ID, 0, rightTime, 0);
-    // デバッグ用に出力
-    Serial.print("L:");
-    Serial.print(leftTime);
-    Serial.print("  R:");
-    Serial.println(rightTime);
 }
 
 void stop() {
@@ -288,10 +295,10 @@ void forwardTile() {
 // メイン制御ループ
 //======================================================
 void ctrlLoop() {
-    if (avgFront() <= FRONT_STOP_DISTANCE_CM && state != TURN_LEFT &&
-        state != TURN_RIGHT && state != TURN_BACK) {
+    // IDLE時のみ前壁停止を行う。FORWARD_TILEでは下の状態処理が
+    // POSTUREへの遷移を行い、POSTURE中は姿勢補正を継続させる。
+    if (avgFront() <= FRONT_STOP_DISTANCE_CM && state == IDLE) {
         stop();
-        state = IDLE;
         return;
     }
 
