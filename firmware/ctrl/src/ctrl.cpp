@@ -39,7 +39,7 @@ static const float STRAIGHT_WALL_KP = 3.0f;  // 距離差1cmあたりの補正�
 static const uint16_t STRAIGHT_CORRECTION_MAX = 150;  // 補正量の上限[Time]
 
 // サーボ用UARTのTXピン（RXは未使用のため-1固定）
-//static const bool DEBUG_MOTOR_OUTPUT = true;
+// static const bool DEBUG_MOTOR_OUTPUT = true;
 static const bool DEBUG_MOTOR_OUTPUT = true;
 
 static const uint32_t DEBUG_MOTOR_OUTPUT_INTERVAL_MS = 100;
@@ -50,6 +50,8 @@ static const uint32_t LEFT_OPEN_CONFIRM_MS =
     100;  // 左壁が無いと判断するための連続確認時間[ms]（仕様8）
 static uint32_t leftOpenStartMs =
     0;  // 左壁が無いと判断するための連続確認開始時刻[ms]
+static bool ignoreLeftOpenUntilTileEnd =
+    false;  // 左壁が無いと判断するための連続確認を無視するフラグ（仕様8）
 //======================================================
 // 外部参照（main.cppでLiDAR値を格納）
 //======================================================
@@ -310,10 +312,19 @@ void ctrlLoop() {
 
             turnLeft();
 
-            // 目標角度との差が2度以内なら停止
             if (fabs(angleError(targetYaw, yaw)) <= YAW_TOLERANCE_DEG) {
                 stop();
-                state = IDLE;
+
+                // 旋回完了時の位置・角度を記録
+                startFrontDistance = avgFront();
+                straightYaw = yaw;
+
+                // 左壁なし判定を一時的に無効化
+                leftOpenStartMs = 0;
+                ignoreLeftOpenUntilTileEnd = true;
+
+                // そのまま1マス前進する
+                state = FORWARD_TILE;
             }
 
             break;
@@ -346,23 +357,27 @@ void ctrlLoop() {
             bool hasLeftWall = (rcv_packet.left1 < WALL_THRESHOLD_CM ||
                                 rcv_packet.left2 < WALL_THRESHOLD_LEFT2);
 
-            // 左壁がなくなったことを確認
-            if (!hasLeftWall) {
-                if (leftOpenStartMs == 0) {
-                    leftOpenStartMs = millis();
-                }
+            // 左旋回後の強制前進中は左折判定を行わない
+            if (!ignoreLeftOpenUntilTileEnd) {
+                bool hasLeftWall = (rcv_packet.left1 < WALL_THRESHOLD_CM ||
+                                    rcv_packet.left2 < WALL_THRESHOLD_LEFT2);
 
-                // 100ms連続して左壁がなければ左折
-                if (millis() - leftOpenStartMs >= LEFT_OPEN_CONFIRM_MS) {
+                if (!hasLeftWall) {
+                    if (leftOpenStartMs == 0) {
+                        leftOpenStartMs = millis();
+                    }
+
+                    if (millis() - leftOpenStartMs >= LEFT_OPEN_CONFIRM_MS) {
+                        leftOpenStartMs = 0;
+
+                        stop();
+                        turnLeft90();
+                        break;
+                    }
+
+                } else {
                     leftOpenStartMs = 0;
-
-                    stop();
-                    turnLeft90();
-                    break;
                 }
-            } else {
-                // 壁が戻ったらリセット
-                leftOpenStartMs = 0;
             }
 
             // 前壁停止
@@ -374,6 +389,9 @@ void ctrlLoop() {
                 ((startFrontDistance - nowFront) >= TILE_SIZE_CM);
 
             if (frontWallClose || movedOneTile) {
+                // 1マス分の前進が終了
+                ignoreLeftOpenUntilTileEnd = false;
+
                 stop();
                 postureStartMs = millis();
                 state = POSTURE;
