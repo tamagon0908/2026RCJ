@@ -303,7 +303,7 @@ void loop() {
     // 【修正】ctrl.cppのステートマシン関数（turnLeft90等）を呼ぶように変更
     if (state == IDLE && !is_suspended && lidarReady) {
         bool hasLeftWall =
-            (rcv_packet.left1 < WALL_THRESHOLD || rcv_packet.left2 < WALL_THRESHOLD_LEFT2);
+            (rcv_packet.left1 < WALL_THRESHOLD && rcv_packet.left2 < WALL_THRESHOLD_LEFT2);
         bool hasFrontWall =
             ((rcv_packet.front1 + rcv_packet.front2) / 2) < WALL_THRESHOLD;
         bool hasRightWall =

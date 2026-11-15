@@ -354,7 +354,7 @@ void ctrlLoop() {
             uint16_t nowFront = avgFront();
 
             // 左側の壁を常時監視
-            bool hasLeftWall = (rcv_packet.left1 < WALL_THRESHOLD_CM ||
+            bool hasLeftWall = (rcv_packet.left1 < WALL_THRESHOLD_CM &&
                                 rcv_packet.left2 < WALL_THRESHOLD_LEFT2);
 
             // 左旋回後の強制前進中は左折判定を行わない
